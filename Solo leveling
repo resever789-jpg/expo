@@ -1,0 +1,287 @@
+# SoloSystem React Native (Full project)
+
+This text document contains a complete React Native project scaffold (single-file presentation) for a **Solo Leveling**-style mobile app built with React Native (CLI). Use it as the source to copy files into a new project folder.
+
+---
+
+## What you'll find in this document
+- `package.json` (dependencies & scripts)
+- `App.js` (main entry — React Native implementation of the Solo System)
+- `components/SkillTree.js` (visual skill tree component)
+- `components/PlayerCard.js` (player UI card)
+- `lib/api.js` (REST helpers)
+- `android/README.md` (how to build signed APK)
+- README with precise run & build instructions
+- Notes about assets (audio/icons) and server configuration
+
+---
+
+## package.json
+
+```json
+{
+  "name": "solo-system-rn",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "build-android": "cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^1.17.11",
+    "react": "18.2.0",
+    "react-native": "0.72.4",
+    "socket.io-client": "^4.7.2",
+    "react-native-svg": "^13.12.0",
+    "react-native-gesture-handler": "^2.9.0",
+    "react-native-reanimated": "^2.15.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.22.9"
+  }
+}
+```
+
+---
+
+## App.js (main entry)
+
+```javascript
+import React, {useEffect, useState, useRef} from 'react';
+import { SafeAreaView, View, Text, TouchableOpacity, FlatList, Image, Alert, StyleSheet } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import io from 'socket.io-client';
+import PlayerCard from './components/PlayerCard';
+import SkillTree from './components/SkillTree';
+import { apiFetch } from './lib/api';
+
+const CONFIG = {
+  SOCKET_SERVER: 'https://your-server.example.com',
+  API_BASE: 'https://your-server.example.com/api',
+  ASSET_PATH: 'assets/'
+};
+
+const STARTING_STATE = {
+  player: {
+    id: null,
+    name: 'Ash', level: 1, xp: 0, xpToNext: 100, statPoints: 0,
+    stats: { strength:5, agility:5, intelligence:5, vitality:5 },
+    hp:100, mp:30, inventory: [], equipped: { weapon:null, armor:null }, skills: []
+  },
+  quests:[{id:1, title:'Clear the Goblin Camp', xp:40, status:'available'}],
+  log: []
+};
+
+export default function App(){
+  const [state, setState] = useState(STARTING_STATE);
+  const socketRef = useRef(null);
+
+  useEffect(()=>{
+    (async ()=>{
+      const raw = await AsyncStorage.getItem('solo-state');
+      if(raw) setState(JSON.parse(raw));
+    })();
+  },[]);
+
+  useEffect(()=>{
+    AsyncStorage.setItem('solo-state', JSON.stringify(state));
+  },[state]);
+
+  useEffect(()=>{
+    try{
+      const socket = io(CONFIG.SOCKET_SERVER, { autoConnect:true });
+      socketRef.current = socket;
+      socket.on('connect', ()=> console.log('socket connected', socket.id));
+      socket.on('player:update', payload => console.log('player update', payload));
+      return ()=> socket.disconnect();
+    }catch(e){console.warn(e)}
+  },[]);
+
+  function pushLog(text){
+    setState(s=> ({...s, log:[{time:Date.now(), text}, ...s.log].slice(0,200)}));
+  }
+
+  function gainXP(amount, source=''){
+    setState(s=>{
+      const p = {...s.player};
+      p.xp += amount;
+      pushLog(`${amount} XP gained ${source}`);
+      while(p.xp >= p.xpToNext){
+        p.xp -= p.xpToNext; p.level +=1; p.statPoints +=3; p.xpToNext = Math.round(p.xpToNext*1.25);
+        pushLog(`Leveled to ${p.level}`);
+      }
+      return {...s, player:p};
+    });
+  }
+
+  function addItem(item){ setState(s=>({...s, player:{...s.player, inventory:[...s.player.inventory, item]}})); pushLog(`Got ${item}`); }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={{flex:1}}>
+        <PlayerCard player={state.player} onTrain={()=>gainXP(15,'Training')} />
+        <View style={{flex:1, padding:12}}>
+          <SkillTree player={state.player} onLearn={(id)=>{ /* allocate via state update */
+            setState(s=>{
+              const p = {...s.player};
+              if(p.statPoints<=0) return s;
+              const found = p.skills.find(x=>x.id===id);
+              if(found) { if(found.level<5) found.level+=1; } else p.skills.push({id, level:1});
+              p.statPoints -=1; return {...s, player:p};
+            });
+          }} />
+
+          <View style={{marginTop:12}}>
+            <Text style={{color:'#ddd', marginBottom:6}}>Inventory</Text>
+            <FlatList data={state.player.inventory} keyExtractor={(i,idx)=>i+idx} horizontal renderItem={({item})=> (
+              <View style={styles.itemBox}><Text style={{color:'#fff'}}>{item}</Text></View>
+            )} />
+          </View>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({ container:{flex:1, backgroundColor:'#0b1020'}, itemBox:{padding:8, backgroundColor:'#111827', marginRight:8, borderRadius:8}});
+```
+
+---
+
+## components/PlayerCard.js
+
+```javascript
+import React from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+
+export default function PlayerCard({player, onTrain}){
+  return (
+    <View style={styles.card}>
+      <View style={{flexDirection:'row', alignItems:'center'}}>
+        <View style={styles.levelBadge}><Text style={{color:'#fff'}}>{player.level}</Text></View>
+        <View style={{marginLeft:10}}>
+          <Text style={styles.name}>{player.name}</Text>
+          <Text style={styles.small}>XP {player.xp}/{player.xpToNext}</Text>
+        </View>
+      </View>
+      <View style={{flexDirection:'row', marginTop:12}}>
+        <TouchableOpacity onPress={onTrain} style={styles.btn}><Text style={styles.btnText}>Train +15 XP</Text></TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({ card:{backgroundColor:'#0f1724', padding:12, margin:12, borderRadius:12}, levelBadge:{width:54,height:54,borderRadius:8,backgroundColor:'#7c3aed',alignItems:'center',justifyContent:'center'}, name:{color:'#fff', fontWeight:'700'}, small:{color:'#9ca3af', fontSize:12}, btn:{backgroundColor:'#0ea5e9', padding:8, borderRadius:8}, btnText:{color:'#022'}});
+```
+
+---
+
+## components/SkillTree.js
+
+```javascript
+import React from 'react';
+import { View, Text, TouchableOpacity } from 'react-native';
+
+const SKILL_TREE = [
+  {id:'s1', name:'Power Strike', desc:'Basic attack', req:[], max:5},
+  {id:'s2', name:'Swift Step', desc:'Speed buff', req:['s1'], max:3},
+  {id:'s3', name:'Berserk', desc:'Attack up with HP cost', req:['s1'], max:3},
+  {id:'s4', name:'Whirlwind', desc:'AoE', req:['s2','s3'], max:1}
+];
+
+export default function SkillTree({player, onLearn}){
+  const ownedIds = player.skills.map(s=>s.id);
+  function canLearn(node){
+    return (node.req||[]).every(r=>ownedIds.includes(r));
+  }
+  return (
+    <View>
+      <Text style={{color:'#fff', fontWeight:'700', marginBottom:8}}>Skill Tree</Text>
+      <View style={{flexDirection:'row', flexWrap:'wrap'}}>
+        {SKILL_TREE.map(node=>{
+          const owned = player.skills.find(s=>s.id===node.id);
+          return (
+            <View key={node.id} style={{backgroundColor: owned ? '#064e3b' : '#111827', padding:10, margin:6, borderRadius:8}}>
+              <Text style={{color:'#fff', fontWeight:'600'}}>{node.name}</Text>
+              <Text style={{color:'#9ca3af', fontSize:12}}>{node.desc}</Text>
+              <TouchableOpacity onPress={()=>onLearn(node.id)} style={{marginTop:6, backgroundColor:'#10b981', padding:6, borderRadius:6}}>
+                <Text style={{color:'#fff'}}>{owned ? `Level ${owned.level}` : 'Learn'}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+```
+
+---
+
+## lib/api.js
+
+```javascript
+export async function apiFetch(path, method='GET', body=null){
+  const base = 'https://your-server.example.com/api';
+  const url = `${base}${path}`;
+  const opts = { method, headers:{'Content-Type':'application/json'} };
+  if(body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  if(!res.ok) throw new Error('API error '+res.status);
+  return res.json();
+}
+```
+
+---
+
+## android/README.md (build signed APK)
+
+Steps to produce a signed APK (short):
+1. Install Android Studio and configure SDK + ANDROID_HOME.
+2. In `android/` run: `./gradlew assembleRelease` (Linux/Mac) or `gradlew assembleRelease` (Windows).
+3. The unsigned APK will be in `android/app/build/outputs/apk/release/app-release-unsigned.apk`.
+4. Create a keystore and sign: `jarsigner` or use Android Studio's Build > Generate Signed Bundle / APK.
+5. Zipalign and verify: `zipalign -v -p 4 input.apk output.apk`.
+
+---
+
+## README — How to run locally (Android)
+
+1. Requirements:
+   - Node.js 18+
+   - Java JDK 11+
+   - Android Studio (SDK + emulator or a real device)
+   - yarn or npm
+
+2. Setup:
+   - Create a new folder, paste the above files into correct paths.
+   - `npm install` or `yarn` to install dependencies.
+
+3. Start the Metro bundler:
+   - `npm start`
+
+4. Run on Android device or emulator:
+   - `npm run android`
+
+5. Build release APK:
+   - `npm run build-android` (then sign as explained above)
+
+---
+
+## Assets & server
+- Put audio files under `android/app/src/main/res/raw/` (or use react-native-sound). Simpler: use simple UI-only placeholder audio.
+- Put item icons under `assets/items/` and reference them with `Image` sources.
+- Update `CONFIG.SOCKET_SERVER` and `API_BASE` to your backend server.
+
+---
+
+## Next steps I can do for you right now (choose any):
+1. Provide a ready-to-run **Node + Express + Socket.IO** server (single-file) you can host to enable multiplayer and save/load player.
+2. Generate **signed APK** instructions with exact keystore commands tailored to your operating system.
+3. Export this project as a downloadable zip package.
+
+---
+
+End of project scaffold.
